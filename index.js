@@ -10,6 +10,8 @@ const sharp = require('sharp');
 const fs = require("fs").promises;
 const path = require("path");
 const os = require("os");
+const nodemailer = require("nodemailer");
+const axios = require("axios"); // Added axios as it was used but not imported
 
 
 
@@ -38,7 +40,7 @@ cloudinary.config({
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
   upload_timeout: 600000,
-   timeout: 600000 
+  timeout: 600000
 });
 
 
@@ -60,9 +62,9 @@ const compressVideo = async (inputBuffer) => {
 
   try {
     await fs.writeFile(inputPath, inputBuffer);
-    
+
     console.log("⚙️ Starting aggressive video compression...");
-    
+
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Video compression timeout (5 minutes)"));
@@ -91,7 +93,7 @@ const compressVideo = async (inputBuffer) => {
             const compressed = await fs.readFile(outputPath);
             const originalSize = inputBuffer.length / 1024 / 1024;
             const compressedSize = compressed.length / 1024 / 1024;
-            console.log(`✅ Compressed: ${originalSize.toFixed(2)}MB → ${compressedSize.toFixed(2)}MB (${((1 - compressedSize/originalSize) * 100).toFixed(1)}% reduction)`);
+            console.log(`✅ Compressed: ${originalSize.toFixed(2)}MB → ${compressedSize.toFixed(2)}MB (${((1 - compressedSize / originalSize) * 100).toFixed(1)}% reduction)`);
             resolve(compressed);
           } catch (err) {
             reject(err);
@@ -105,8 +107,8 @@ const compressVideo = async (inputBuffer) => {
     });
   } finally {
     try {
-      await fs.unlink(inputPath).catch(() => {});
-      await fs.unlink(outputPath).catch(() => {});
+      await fs.unlink(inputPath).catch(() => { });
+      await fs.unlink(outputPath).catch(() => { });
     } catch (err) {
       console.error("Temp file cleanup error:", err);
     }
@@ -117,13 +119,13 @@ const compressVideo = async (inputBuffer) => {
 const authenticateAdmin = (req, res, next) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
-    
+
     if (!token) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    
+
     if (decoded.role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required' });
     }
@@ -206,7 +208,7 @@ const upload = multer({
     const allowedMimetypes = [
       // Images
       'image/jpeg',
-      'image/jpg', 
+      'image/jpg',
       'image/png',
       'image/gif',
       'image/webp',
@@ -253,10 +255,10 @@ const compressImage = async (buffer, isCover = false) => {
 
 const uploadToCloudinaryDirect = async (buffer, options = {}) => {
   const isVideo = options.resource_type === 'video';
-  
+
   try {
     console.log(`☁️ Uploading to Cloudinary via direct API...`);
-    
+
     // Generate signature
     const timestamp = Math.round(Date.now() / 1000);
     const paramsToSign = {
@@ -264,29 +266,29 @@ const uploadToCloudinaryDirect = async (buffer, options = {}) => {
       folder: options.folder || 'behance-portfolio',
       public_id: options.public_id
     };
-    
+
     if (isVideo) {
       paramsToSign.resource_type = 'video';
       paramsToSign.eager = 'w_960,h_540,c_limit,q_auto:low/mp4';
       paramsToSign.eager_async = true;
     }
-    
+
     // Create signature string
     const signatureString = Object.keys(paramsToSign)
       .sort()
       .map(key => `${key}=${paramsToSign[key]}`)
       .join('&');
-    
+
     const crypto = require('crypto');
     const signature = crypto
       .createHash('sha256')
       .update(signatureString + process.env.CLOUDINARY_API_SECRET)
       .digest('hex');
-    
+
     // Prepare form data
     const FormData = require('form-data');
     const form = new FormData();
-    
+
     form.append('file', buffer, {
       filename: `upload.${isVideo ? 'mp4' : 'jpg'}`,
       contentType: isVideo ? 'video/mp4' : 'image/jpeg'
@@ -296,15 +298,15 @@ const uploadToCloudinaryDirect = async (buffer, options = {}) => {
     form.append('public_id', paramsToSign.public_id);
     form.append('api_key', process.env.CLOUDINARY_API_KEY);
     form.append('signature', signature);
-    
+
     if (isVideo) {
       form.append('resource_type', 'video');
       form.append('eager', 'w_960,h_540,c_limit,q_auto:low/mp4');
       form.append('eager_async', 'true');
     }
-    
+
     const uploadUrl = `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/${isVideo ? 'video' : 'image'}/upload`;
-    
+
     const response = await axios.post(uploadUrl, form, {
       headers: form.getHeaders(),
       maxContentLength: Infinity,
@@ -315,15 +317,15 @@ const uploadToCloudinaryDirect = async (buffer, options = {}) => {
         console.log(`📤 Upload progress: ${percentCompleted}%`);
       }
     });
-    
+
     console.log(`✅ Upload complete: ${response.data.secure_url}`);
-    
+
     return {
       url: response.data.secure_url,
       duration: response.data.duration,
       format: response.data.format
     };
-    
+
   } catch (error) {
     console.error('❌ Direct upload error:', error.response?.data || error.message);
     throw error;
@@ -333,7 +335,7 @@ const uploadToCloudinaryDirect = async (buffer, options = {}) => {
 // Fallback: Upload very large videos to temporary storage first
 const uploadLargeVideo = async (buffer, options = {}) => {
   console.log("📦 Using chunked upload for large video...");
-  
+
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_large(
       buffer,
@@ -366,9 +368,9 @@ const uploadToCloudinary = (buffer, options = {}) => {
   return new Promise((resolve, reject) => {
     const isVideo = options.resource_type === 'video';
     const sizeMB = buffer.length / 1024 / 1024;
-    
+
     console.log(`📊 Uploading ${sizeMB.toFixed(2)}MB ${isVideo ? 'video' : 'image'}...`);
-    
+
     const uploadOptions = {
       folder: 'behance-portfolio',
       resource_type: options.resource_type || 'auto',
@@ -437,7 +439,7 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
     const compressedCover = await compressImage(req.files.coverImage[0].buffer, true);
     const coverImageResult = await uploadToCloudinary(
       compressedCover,
-      { 
+      {
         public_id: `cover-${Date.now()}`,
         resource_type: 'image'
       }
@@ -447,18 +449,18 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
     let imagesUrls = [];
     if (req.files.images) {
       console.log(`📸 Uploading ${req.files.images.length} additional images...`);
-      const compressionPromises = req.files.images.map(file => 
+      const compressionPromises = req.files.images.map(file =>
         compressImage(file.buffer, false)
       );
       const compressedImages = await Promise.all(compressionPromises);
-      
-      const uploadPromises = compressedImages.map((buffer, index) => 
-        uploadToCloudinary(buffer, { 
+
+      const uploadPromises = compressedImages.map((buffer, index) =>
+        uploadToCloudinary(buffer, {
           public_id: `image-${Date.now()}-${index}`,
           resource_type: 'image'
         })
       );
-      
+
       const results = await Promise.all(uploadPromises);
       imagesUrls = results.map(r => r.url);
     }
@@ -476,11 +478,11 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
       });
 
       if (isVideo && fileSizeMB > 100) {
-        return res.status(400).json({ 
-          error: `Video too large: ${fileSizeMB.toFixed(2)}MB. Max 100MB.` 
+        return res.status(400).json({
+          error: `Video too large: ${fileSizeMB.toFixed(2)}MB. Max 100MB.`
         });
       }
-      
+
       let finalBuffer = file.buffer;
 
       // Compress videos larger than 20MB
@@ -488,10 +490,10 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
         try {
           console.log("🔧 Compressing video...");
           finalBuffer = await compressVideo(file.buffer);
-          
+
           const compressedSizeMB = finalBuffer.length / 1024 / 1024;
           console.log(`✅ Video ready: ${compressedSizeMB.toFixed(2)}MB`);
-          
+
           // If still too large, reject
           if (compressedSizeMB > 40) {
             return res.status(400).json({
@@ -500,7 +502,7 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
           }
         } catch (compressionError) {
           console.error("❌ Compression failed:", compressionError.message);
-          return res.status(500).json({ 
+          return res.status(500).json({
             error: "Video compression failed. Try a different format."
           });
         }
@@ -512,7 +514,7 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
       try {
         const mediaResult = await uploadToCloudinary(
           finalBuffer,
-          { 
+          {
             public_id: `media-${Date.now()}`,
             resource_type: isVideo ? 'video' : 'image'
           }
@@ -524,26 +526,26 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
           duration: mediaResult.duration,
           format: mediaResult.format
         };
-        
+
       } catch (uploadError) {
         console.error("❌ Upload failed:", uploadError.message);
-        
+
         // Provide helpful error messages
         if (uploadError.message?.includes('502')) {
-          return res.status(500).json({ 
+          return res.status(500).json({
             error: "Cloudinary service timeout. The video may be too large.",
             suggestion: "Try compressing the video further or use a shorter clip"
           });
         }
-        
+
         if (uploadError.message?.includes('ECONNRESET')) {
-          return res.status(500).json({ 
+          return res.status(500).json({
             error: "Connection lost during upload.",
             suggestion: "This usually means the file is too large. Try a smaller/shorter video"
           });
         }
-        
-        return res.status(500).json({ 
+
+        return res.status(500).json({
           error: "Upload failed: " + uploadError.message,
           suggestion: "Try a smaller file or different format"
         });
@@ -583,7 +585,7 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error:", error.message);
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message || "Failed to create project"
     });
   }
@@ -593,7 +595,7 @@ app.post("/api/projects", authenticateAdmin, uploadFields, async (req, res) => {
 app.get('/api/projects', async (req, res) => {
   try {
     const { category } = req.query;
-    
+
     let query = {};
     if (category) {
       query.category = category;
@@ -607,13 +609,13 @@ app.get('/api/projects', async (req, res) => {
       coverImageUrl: project.coverImage,
       imagesUrls: project.images,
       mediaUrl: project.media?.url || null,
-      mediaType:project.media?.mediaType || null,
+      mediaType: project.media?.mediaType || null,
       mediaDuration: project.media?.duration || null
     }));
 
-    res.json({ 
+    res.json({
       count: projectsWithUrls.length,
-      projects: projectsWithUrls 
+      projects: projectsWithUrls
     });
   } catch (error) {
     console.error('Error fetching projects:', error);
@@ -625,7 +627,7 @@ app.get('/api/projects', async (req, res) => {
 app.get('/api/projects/:id', async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    
+
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -649,7 +651,7 @@ app.get('/api/projects/:id', async (req, res) => {
 app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    
+
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -665,7 +667,7 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
       const compressedCover = await compressImage(req.files.coverImage[0].buffer, true);
       const coverImageResult = await uploadToCloudinary(
         compressedCover,
-        { 
+        {
           public_id: `cover-${Date.now()}`,
           resource_type: 'image'
         }
@@ -675,18 +677,18 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
 
     // Update images
     if (req.files?.images) {
-      const compressionPromises = req.files.images.map(file => 
+      const compressionPromises = req.files.images.map(file =>
         compressImage(file.buffer, false)
       );
       const compressedImages = await Promise.all(compressionPromises);
-      
-      const uploadPromises = compressedImages.map((buffer, index) => 
-        uploadToCloudinary(buffer, { 
+
+      const uploadPromises = compressedImages.map((buffer, index) =>
+        uploadToCloudinary(buffer, {
           public_id: `image-${Date.now()}-${index}`,
           resource_type: 'image'
         })
       );
-      
+
       const results = await Promise.all(uploadPromises);
       project.images = results.map(r => r.url);
     }
@@ -695,10 +697,10 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
     if (req.files?.media) {
       const file = req.files.media[0];
       const isVideo = file.mimetype.startsWith('video');
-      
+
       const mediaResult = await uploadToCloudinary(
         file.buffer,
-        { 
+        {
           public_id: `media-${Date.now()}`,
           resource_type: isVideo ? 'video' : 'image'
         }
@@ -706,7 +708,7 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
 
       project.media = {
         url: mediaResult.url,
-         mediaType: isVideo ? 'video' : 'image',
+        mediaType: isVideo ? 'video' : 'image',
         duration: mediaResult.duration,
         format: mediaResult.format
       };
@@ -723,7 +725,7 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
         coverImageUrl: project.coverImage,
         imagesUrls: project.images,
         mediaUrl: project.media?.url || null,
-        mediaType:project.media?.mediaType || null
+        mediaType: project.media?.mediaType || null
       }
     });
   } catch (error) {
@@ -736,7 +738,7 @@ app.put('/api/projects/:id', authenticateAdmin, uploadFields, async (req, res) =
 app.delete('/api/projects/:id', authenticateAdmin, async (req, res) => {
   try {
     const project = await Project.findByIdAndDelete(req.params.id);
-    
+
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
@@ -745,6 +747,58 @@ app.delete('/api/projects/:id', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error deleting project:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============= CONTACT ROUTES =============
+
+// POST - Send Contact Email
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, project, message } = req.body;
+
+    if (!name || !email || !message) {
+      return res.status(400).json({ error: "Name, email, and message are required" });
+    }
+
+    // Configure Nodemailer transporter
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
+      },
+    });
+
+    const mailOptions = {
+      from: email,
+      to: process.env.EMAIL_USER,
+      subject: `New Inquiry from ${name} - ${project}`,
+      text: `
+        Name: ${name}
+        Email: ${email}
+        Project Type: ${project}
+        
+        Message:
+        ${message}
+      `,
+      html: `
+        <h3>New Inquiry from Website</h3>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Project Type:</strong> ${project}</p>
+        <p><strong>Message:</strong></p>
+        <p>${message.replace(/\n/g, '<br>')}</p>
+      `
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`✅ Email sent from ${email}`);
+
+    res.status(200).json({ message: "Email sent successfully!" });
+  } catch (error) {
+    console.error('❌ Email error:', error);
+    res.status(500).json({ error: "Failed to send email. Please try again later." });
   }
 });
 
@@ -760,8 +814,8 @@ app.get('/api/categories', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'Server is running', 
+  res.json({
+    status: 'Server is running',
     port: PORT,
     mongodb: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
     cloudinary: 'Configured',
@@ -773,14 +827,14 @@ app.get('/health', (req, res) => {
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Server error:', error);
-  
+
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ error: 'File size too large. Maximum 100MB allowed for videos, 20MB for images.' });
     }
     return res.status(400).json({ error: error.message });
   }
-  
+
   res.status(500).json({ error: error.message || 'Internal server error' });
 });
 
@@ -797,3 +851,88 @@ app.listen(PORT, () => {
 
 
 
+// const express = require("express");
+// const fs = require("fs");
+// const path = require("path");
+// const PDFDocument = require("pdfkit");
+// const sharp = require("sharp");
+
+// const app = express();
+// const PORT = 3000;
+
+// // Logical Order of Operations for the PDF
+// const fileOrder = [
+//   "diagram-export-1-16-2026-3_26_46-PM.jpg", // BOM
+//   "diagram-export-1-16-2026-3_27_39-PM.jpg", // Material Issue
+//   "diagram-export-1-16-2026-3_28_51-PM.jpg", // Batch
+//   "diagram-export-1-16-2026-3_29_21-PM.jpg", // SOP
+//   "diagram-export-1-16-2026-3_30_56-PM.jpg", // After Production Check
+//   "diagram-export-1-16-2026-3_33_07-PM.jpg", // Rejected Goods
+//   "diagram-export-1-16-2026-3_33_24-PM.jpg", // Final QC
+//   "diagram-export-1-16-2026-3_33_40-PM.jpg", // COA
+//   "diagram-export-1-16-2026-3_34_39-PM.jpg", // Invoice
+//   "diagram-export-1-16-2026-3_35_15-PM.jpg",  // Dispatch
+//   "diagram-export-1-16-2026-3_43_58-PM.jpg",
+//   "diagram-export-1-16-2026-3_44_17-PM.jpg",
+//   "diagram-export-1-16-2026-3_44_31-PM.jpg",
+//   "diagram-export-1-16-2026-3_44_43-PM.jpg",
+//   "diagram-export-1-16-2026-3_44_56-PM.jpg",
+//   "diagram-export-1-16-2026-3_45_20-PM.jpg"
+// ];
+
+// app.get("/generate-pdf", async (req, res) => {
+//   try {
+//     const imagesDir = path.join(__dirname, "images");
+//     const outputDir = path.join(__dirname, "output");
+//     const outputFile = path.join(outputDir, "Scanbo_ERP_Wireframes.pdf");
+
+//     if (!fs.existsSync(outputDir)) {
+//       fs.mkdirSync(outputDir);
+//     }
+
+//     const doc = new PDFDocument({ autoFirstPage: false });
+//     const stream = fs.createWriteStream(outputFile);
+//     doc.pipe(stream);
+
+//     console.log("Processing images...");
+
+//     for (const filename of fileOrder) {
+//       const imagePath = path.join(imagesDir, filename);
+
+//       if (!fs.existsSync(imagePath)) {
+//         console.log(`Warning: File not found - ${filename}`);
+//         continue;
+//       }
+
+//       console.log(`Added: ${filename}`);
+
+//       // Convert image to RGB buffer (like PIL .convert("RGB"))
+//       const buffer = await sharp(imagePath)
+//         .jpeg({ quality: 95 })
+//         .toBuffer();
+
+//       const image = doc.openImage(buffer);
+
+//       doc.addPage({
+//         size: [image.width, image.height]
+//       });
+
+//       doc.image(image, 0, 0);
+//     }
+
+//     doc.end();
+
+//     stream.on("finish", () => {
+//       console.log("PDF generated successfully!");
+//       res.download(outputFile);
+//     });
+
+//   } catch (error) {
+//     console.error("Error generating PDF:", error);
+//     res.status(500).send("Failed to generate PDF");
+//   }
+// });
+
+// app.listen(PORT, () => {
+//   console.log(`Server running at http://localhost:${PORT}`);
+// });
